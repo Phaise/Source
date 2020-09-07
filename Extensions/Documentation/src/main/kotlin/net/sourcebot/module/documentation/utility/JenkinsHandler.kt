@@ -7,16 +7,16 @@ import net.dv8tion.jda.api.entities.Message
 import net.dv8tion.jda.api.entities.User
 import net.dv8tion.jda.api.utils.MarkdownSanitizer
 import net.dv8tion.jda.api.utils.MarkdownUtil
-import net.sourcebot.api.response.Response
 import net.sourcebot.api.response.ErrorResponse
+import net.sourcebot.api.response.Response
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import java.util.stream.Collectors
 
 class JenkinsHandler(
-        url: String,
-        val iconUrl: String,
-        val embedTitle: String
+    url: String,
+    val iconUrl: String,
+    val embedTitle: String
 ) {
 
     private val jenkins: Jenkins = Jenkins(url)
@@ -30,7 +30,9 @@ class JenkinsHandler(
         try {
             val infoList: List<Information> = jenkins.search(query)
 
-            if (infoList.isEmpty()) return ErrorResponse(user.name, "Unable to find `$query` in the $embedTitle!")
+            if (infoList.isEmpty()) {
+                return ErrorResponse(user.name, "Unable to find `$query` in the $embedTitle!")
+            }
 
             val docAlert = DocResponse()
             docAlert.setAuthor(embedTitle, null, iconUrl)
@@ -46,6 +48,7 @@ class JenkinsHandler(
             }
 
         } catch (ex: Exception) {
+            ex.printStackTrace() //- This is for debug purposes when enabled
             val errDesc = "Unable to find `$query` in the $embedTitle!"
             return ErrorResponse(user.name, errDesc)
         }
@@ -60,12 +63,12 @@ class JenkinsHandler(
             is ClassInformation -> {
 
                 val nestedClassList: List<String> = information.nestedClassList.stream()
-                        .map { it.replace("$infoName.", "") }
-                        .collect(Collectors.toList())
+                    .map { it.replace("$infoName.", "") }
+                    .collect(Collectors.toList())
 
                 val methodList: List<String> = information.methodList.stream()
-                        .map { it.substringBefore("(").trim() }
-                        .collect(Collectors.toList())
+                    .map { it.substringBefore("(").trim() }
+                    .collect(Collectors.toList())
 
                 docAlert.attemptAddEmbedField(nestedClassList, "Nested Classes:")
                 docAlert.attemptAddEmbedField(methodList, "Methods:")
@@ -94,8 +97,9 @@ class JenkinsHandler(
         }
 
         val infoDescElement: Element = Jsoup.parse("<div>$infoRawDescription</div>").selectFirst("div")
-        var infoDescription: String = convertHyperlinksToMarkdown(infoDescElement, infoUrl).toMarkdown()
-        infoDescription = infoDescription.approxTruncate(600)
+        val infoDescription: String = convertHyperlinksToMarkdown(infoDescElement, infoUrl)
+            .toMarkdown()
+            .truncate(600)
 
         val infoHyperlink: String = MarkdownUtil.maskedLink(infoName, infoUrl)
         docAlert.setDescription("**__${infoHyperlink}__**\n$infoDescription")
@@ -104,15 +108,24 @@ class JenkinsHandler(
             val rawExtraInfo: Map<String, String> = information.rawExtraInformation
 
             rawExtraInfo.forEach { (key, value) ->
-                val replacementNewline = if(key.equals("Parameters:", true)) "<br><br>" else "<br>"
+                val modifiedValue = value.replace("\n", "<br>")
 
-                val modifiedValue = value.replace("\n", replacementNewline)
 
                 val valueElement: Element = Jsoup.parse("<div>$modifiedValue</div>").selectFirst("div")
-                val convertedValue = convertHyperlinksToMarkdown(valueElement, infoUrl).toMarkdown()
+                val convertedValue = convertHyperlinksToMarkdown(valueElement, infoUrl)
+                    .toMarkdown()
+                    .replace("<\\[`?([^`]+)`?]\\((.*)\\)>".toRegex(), "[`<$1>`]($2)")
 
+                val fieldValue = if (key.equals("Parameters:", true)) {
+                    convertedValue.truncate(250)
+                } else {
+                    if (convertedValue.length > 500) {
+                        convertedValue.truncate(500)
+                    }
+                    convertedValue
+                }
 
-                docAlert.addField(key, convertedValue, false)
+                docAlert.addField(key, fieldValue, false)
             }
         }
 
@@ -134,7 +147,13 @@ class JenkinsHandler(
             }
 
             val info = infoList[i]
-            val name = "${info.type} ${info.name}"
+
+            var name = "${info.type} ${info.name}"
+            if (info is MethodInformation) {
+                val className = info.classInfo.name.substringBefore("<")
+                name = "${info.type} $className#${info.name}"
+            }
+
             val optionText = MarkdownUtil.maskedLink(name, info.url)
 
             docAlert.appendDescription("\n\n**${i + 1}** - $optionText")
@@ -156,69 +175,101 @@ class JenkinsHandler(
         val strBuilder = StringBuilder()
 
         list.stream()
-                .filter { !strBuilder.toString().contains(it, true) && strBuilder.length <= 512 }
-                .forEach { strBuilder.append("`$it` ") }
+            .filter { !strBuilder.toString().contains(it, true) && strBuilder.length <= 512 }
+            .forEach {
+                val builderLength = strBuilder.length + it.length
 
-        if (strBuilder.length >= 512) {
-            strBuilder.append("...")
-        }
+                val itemName = it.substringBefore("<")
+                val appendStr = if (builderLength >= 512) "`$itemName`..." else "`$itemName` "
+                strBuilder.append(appendStr)
+            }
 
         return strBuilder.toString().trim()
     }
 
     private fun getInfoName(className: String, infoName: String): String {
         return "$className#${infoName.substringAfter("(" + 1)}"
+            .replace("<.*?>+".toRegex(), "")
     }
 
     private fun convertHyperlinksToMarkdown(element: Element, url: String): String {
         var html: String = element.outerHtml()
 
         element.select("a").stream()
-                .filter { it.attr("href") != null }
-                .forEach {
+            .filter { it.attr("href") != null }
+            .forEach {
 
-                    var hrefUrl: String = it.attr("href")
-                    val text: String = it.outerHtml().toMarkdown()
+                val baseClassUrl: String = url.substringBeforeLast("#")
+                var hrefUrl: String = it.attr("href")
+                val text: String = it.html().toMarkdown()
 
-                    if (!hrefUrl.contains("http", true)) {
-                        if (hrefUrl.contains("../") || hrefUrl.contains("#")) {
-                            hrefUrl = hrefUrl.replace("../", "")
-                            val baseClassUrl = url.substringBeforeLast("#")
-
-                            hrefUrl = if (hrefUrl.contains("#") && !hrefUrl.contains("/")) {
-                                baseClassUrl + hrefUrl
-                            } else baseUrl + hrefUrl
-
-                        } else if (hrefUrl.contains(".html", true)) {
-                            hrefUrl = hrefUrl.substring(hrefUrl.lastIndexOf("/") + 1).substringBeforeLast(".")
-                            hrefUrl = retrieveClassUrl(hrefUrl)?.trim() ?: return@forEach
+                hrefUrl = with(hrefUrl) {
+                    when {
+                        contains("http") -> hrefUrl
+                        contains(".html") -> {
+                            val pkgUrl = url.substringBeforeLast("/")
+                            "$pkgUrl/$this"
                         }
+                        contains("../") || contains("#") && !contains(".html") -> {
 
-                    }
+                            if (contains("#") && !contains("/")) {
+                                return@with baseClassUrl + url
+                            }
 
-                    if (hrefUrl.isNotEmpty()) {
-                        hrefUrl = MarkdownSanitizer.escape(hrefUrl)
-                        val hyperlink: String = MarkdownUtil.maskedLink(text, hrefUrl).replace("%29", ")")
+                            val modifiedHref = replace("../", "")
 
-                        html = html.replace(it.outerHtml(), hyperlink)
+                            if (it.hasAttr("title")) {
+                                val newPackage = it.attr("title")
+                                    .replace("class in ", "")
+                                    .replace(".", "/")
+                                    .trim()
+
+                                val parentPkgDir = "/${newPackage.substringBefore("/")}/"
+                                val basePkgUrl = url.substringBeforeLast(parentPkgDir) + parentPkgDir
+
+                                basePkgUrl + modifiedHref
+                            } else {
+                                baseUrl + modifiedHref
+                            }
+
+                        }
+                        contains(".html", true) -> {
+                            val modifiedHref = substring(lastIndexOf("/") + 1)
+                                .substringBeforeLast(".")
+
+                            retrieveClassUrl(modifiedHref)?.trim() ?: return@forEach
+                        }
+                        else -> this
                     }
 
                 }
 
-        html = html.replace("<code>\\[(.*?)]\\((.*?)\\)</code>".toRegex(), "[`$1`]($2)")
+                if (hrefUrl.isNotEmpty()) {
+                    val isCodeBlock = it.parent().tagName()?.equals("code", true) ?: false
 
-        // This prevents an issue, if there are 2 or more hyperlinks in the same code block
+                    val modifiedText = if (isCodeBlock && !text.contains("`")) "`$text`" else text
+
+                    hrefUrl = MarkdownSanitizer.escape(hrefUrl)
+                    val hyperlink: String = MarkdownUtil.maskedLink(modifiedText, hrefUrl)
+                        .replace("%29", ")")
+
+                    html = html.replace(it.outerHtml(), hyperlink)
+                }
+
+            }
+
+
+        // Removes code tags that surround a hyperlink
         return html.replace("<code>(\\[.*?\\).*?)</code>".toRegex(), "$1")
     }
 
 
-
     private fun retrieveClassUrl(className: String): String? {
         val urlList = jenkins.classList.stream()
-                .filter {
-                    val modifiedElement = it.substring(it.lastIndexOf("/") + 1).removeSuffix(".html")
-                    return@filter modifiedElement.equals(className, true)
-                }.collect(Collectors.toList())
+            .filter {
+                val modifiedElement = it.substring(it.lastIndexOf("/") + 1).removeSuffix(".html")
+                return@filter modifiedElement.equals(className, true)
+            }.collect(Collectors.toList())
 
         return if (urlList.size == 0) null else urlList[0]
     }

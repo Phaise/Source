@@ -1,4 +1,5 @@
 {
+  "log-level": "INFO",
   "mongodb": "mongodb://username:password@host:27017",
   "global-admins": [],
   "commands": {
@@ -12,10 +13,6 @@
     "type": "DEFAULT",
     "value": "Source - Shard %d"
   },
-  "lifecycle": {
-    "restart": "/bin/bash restart.sh",
-    "stop": "/bin/bash stop.sh",
-    "update": "/bin/bash update.sh"
-  },
+  "restart-script": "./restart.sh",
   "token": ""
 }

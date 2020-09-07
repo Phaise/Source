@@ -1,5 +1,6 @@
 package net.sourcebot
 
+import ch.qos.logback.classic.Level
 import com.fasterxml.jackson.annotation.JsonCreator
 import com.fasterxml.jackson.annotation.JsonProperty
 import net.dv8tion.jda.api.JDA
@@ -20,6 +21,7 @@ import net.sourcebot.api.database.MongoDB
 import net.sourcebot.api.database.MongoSerial
 import net.sourcebot.api.event.EventSystem
 import net.sourcebot.api.event.SourceEvent
+import net.sourcebot.api.logger.LoggerConfiguration
 import net.sourcebot.api.module.ModuleHandler
 import net.sourcebot.api.permission.PermissionHandler
 import net.sourcebot.api.permission.SourcePermission
@@ -35,6 +37,7 @@ import java.nio.file.Files
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.*
+import java.util.concurrent.Executors
 
 class Source(val properties: Properties) {
     private val logger: Logger = LoggerFactory.getLogger(Source::class.java)
@@ -107,29 +110,41 @@ class Source(val properties: Properties) {
 
     companion object {
         @JvmField val TIME_ZONE: ZoneId = ZoneId.of("America/New_York")
-        @JvmField val DATE_TIME_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern(
+        @JvmField
+        val DATE_TIME_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern(
             "MM/dd/yyyy hh:mm:ss a z"
         ).withZone(TIME_ZONE)
-        @JvmField val TIME_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern(
+        @JvmField
+        val TIME_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern(
             "hh:mm:ss a z"
         ).withZone(TIME_ZONE)
-        @JvmField val DATE_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern(
+        @JvmField
+        val DATE_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern(
             "MM/dd/yyyy"
         ).withZone(TIME_ZONE)
 
+        private val numCores = Runtime.getRuntime().availableProcessors()
+        @JvmField
+        val SCHEDULED_EXECUTOR_SERVICE = Executors.newScheduledThreadPool(2 * numCores)
+        @JvmField
+        val EXECUTOR_SERVICE = Executors.newFixedThreadPool(2 * numCores)
+
         var enabled = false
             internal set
-        @JvmStatic fun main(args: Array<String>) {
+
+        @JvmStatic
+        fun main(args: Array<String>) {
             SysOutOverSLF4J.sendSystemOutAndErrToSLF4J()
             start()
         }
 
-        @JvmStatic fun start() {
+        @JvmStatic
+        fun start() {
             if (enabled) throw IllegalStateException("Source is already enabled!")
             enabled = true
 
             JsonSerial.registerSerial(Properties.Serial())
-            return File("config.json").apply {
+            val properties = File("config.json").apply {
                 if (!exists()) {
                     Source::class.java.getResourceAsStream("/config.example.json").use {
                         Files.copy(it, this.toPath())
@@ -137,7 +152,11 @@ class Source(val properties: Properties) {
                 }
             }.let {
                 JsonSerial.mapper.readValue(it, Properties::class.java)
-            }.let { Source(it) }
+            }
+            val logLevelName = properties.required<String>("log-level")
+            val logLevel = Level.toLevel(logLevelName, Level.INFO)
+            LoggerConfiguration.LOG_LEVEL = logLevel
+            Source(properties)
         }
     }
 
